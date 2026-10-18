@@ -1,0 +1,619 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>解压立体水晶泡泡</title>
+<style>
+  body {
+    margin: 0;
+    overflow: hidden;
+    background-color: #020105;
+    font-family: system-ui, -apple-system, sans-serif;
+    touch-action: none;
+  }
+  canvas { display: block; }
+  
+  /* 底部控制面板 */
+  .controls {
+    position: absolute;
+    bottom: 30px; left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    background: rgba(20, 25, 40, 0.4);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    padding: 12px 24px;
+    border-radius: 30px;
+    border: 1px solid rgba(100, 200, 255, 0.2);
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+    z-index: 10;
+  }
+
+  /* 按钮样式 */
+  .btn-auto {
+    background: transparent;
+    border: 1px solid rgba(200, 230, 255, 0.3);
+    color: rgba(200, 230, 255, 0.8);
+    padding: 8px 16px;
+    border-radius: 20px;
+    cursor: pointer;
+    font-size: 13px;
+    letter-spacing: 0.1em;
+    transition: all 0.3s ease;
+    white-space: nowrap;
+  }
+  .btn-auto.active {
+    background: rgba(100, 200, 255, 0.2);
+    border-color: rgba(100, 200, 255, 0.8);
+    color: #fff;
+    text-shadow: 0 0 10px rgba(100, 200, 255, 0.8);
+  }
+
+  /* 滑块样式 */
+  .slider-container {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 12px;
+    color: rgba(200, 230, 255, 0.5);
+    letter-spacing: 0.1em;
+  }
+  
+  input[type=range] {
+    -webkit-appearance: none;
+    width: 100px;
+    background: transparent;
+  }
+  input[type=range]::-webkit-slider-runnable-track {
+    width: 100%;
+    height: 4px;
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 2px;
+  }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    height: 14px; width: 14px;
+    border-radius: 50%;
+    background: #fff;
+    margin-top: -5px;
+    box-shadow: 0 0 10px rgba(100, 200, 255, 0.8);
+    cursor: pointer;
+  }
+</style>
+</head>
+<body>
+
+<div class="controls">
+  <button class="btn-auto" id="btnAuto">开启自动解压</button>
+  <div class="slider-container">
+    <span>慢</span>
+    <input type="range" id="speedSlider" min="100" max="2000" value="800" step="100" dir="rtl">
+    <span>快</span>
+  </div>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+
+// ==========================================
+// 1. 音效 (增加参数控制音量，防炸音)
+// ==========================================
+let audioCtx;
+function playSound(type, volume = 1.0) {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+  
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  
+  if (type === 'explode') {
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(400 + Math.random() * 200, audioCtx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(100, audioCtx.currentTime + 0.15);
+    gain.gain.setValueAtTime(0.6 * volume, audioCtx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.15);
+    osc.start(); osc.stop(audioCtx.currentTime + 0.15);
+  } else {
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(200 + Math.random() * 100, audioCtx.currentTime);
+    osc.frequency.linearRampToValueAtTime(50, audioCtx.currentTime + 0.3);
+    gain.gain.setValueAtTime(0.4 * volume, audioCtx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.3);
+    osc.start(); osc.stop(audioCtx.currentTime + 0.3);
+  }
+  
+  osc.connect(gain);
+  gain.connect(audioCtx.destination);
+}
+
+// ==========================================
+// 2. 场景初始化
+// ==========================================
+const scene = new THREE.Scene();
+scene.fog = new THREE.FogExp2(0x000000, 0.0015);
+
+const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+camera.position.set(0, 0, 200);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+document.body.appendChild(renderer.domElement);
+
+let visibleHeight = 2 * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) * camera.position.z;
+let visibleWidth = visibleHeight * camera.aspect;
+
+const renderScene = new RenderPass(scene, camera);
+const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 1.5, 0.5, 0.85);
+bloomPass.threshold = 0.15; 
+bloomPass.strength = 1.5;  
+bloomPass.radius = 0.7;    
+
+const composer = new EffectComposer(renderer);
+composer.addPass(renderScene);
+composer.addPass(bloomPass);
+
+// ==========================================
+// 3. 终极 3D 立体水晶贴图绘制
+// ==========================================
+function create3DCrystalBubble() {
+  const canvas = document.createElement('canvas');
+  canvas.width = 512; canvas.height = 512;
+  const ctx = canvas.getContext('2d');
+  const cx = 256, cy = 256, r = 240;
+
+  ctx.clearRect(0, 0, 512, 512);
+  const baseGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
+  baseGrad.addColorStop(0, 'rgba(200, 240, 255, 0)');
+  baseGrad.addColorStop(0.8, 'rgba(200, 240, 255, 0.02)');
+  baseGrad.addColorStop(1, 'rgba(200, 240, 255, 0.08)');
+  ctx.fillStyle = baseGrad;
+  ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.fill();
+
+  ctx.globalCompositeOperation = 'screen';
+  for (let i = 0; i < 360; i += 15) {
+    const angleStart = (i * Math.PI) / 180;
+    const angleEnd = ((i + 15) * Math.PI) / 180;
+    const dist = 0.7 + Math.sin(i * Math.PI / 180) * 0.2; 
+    
+    ctx.beginPath();
+    ctx.arc(cx, cy, r * dist, angleStart, angleEnd);
+    ctx.arc(cx, cy, r * 0.95, angleEnd, angleStart, true); 
+    ctx.closePath();
+    
+    const hue = (i * 2) % 360;
+    ctx.fillStyle = `hsla(${hue}, 100%, 70%, 0.15)`;
+    ctx.fill();
+  }
+
+  const shadowGrad = ctx.createRadialGradient(cx, cy, r*0.85, cx, cy, r);
+  shadowGrad.addColorStop(0, 'rgba(0, 0, 0, 0)');
+  shadowGrad.addColorStop(1, 'rgba(10, 20, 40, 0.4)'); 
+  ctx.fillStyle = shadowGrad;
+  ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.fill();
+
+  ctx.globalCompositeOperation = 'screen';
+  const bottomGlow = ctx.createRadialGradient(cx, cy + r*0.6, 0, cx, cy + r*0.6, r*0.5);
+  bottomGlow.addColorStop(0, 'rgba(150, 220, 255, 0.4)');
+  bottomGlow.addColorStop(1, 'rgba(255, 255, 255, 0)');
+  ctx.fillStyle = bottomGlow;
+  ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.fill();
+
+  const hl1 = ctx.createRadialGradient(cx - r*0.4, cy - r*0.4, 0, cx - r*0.4, cy - r*0.4, r*0.35);
+  hl1.addColorStop(0, 'rgba(255, 255, 255, 0.9)');
+  hl1.addColorStop(0.15, 'rgba(255, 255, 255, 0.2)');
+  hl1.addColorStop(1, 'rgba(255, 255, 255,0)');
+  ctx.fillStyle = hl1;
+  ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.fill();
+
+  const hl2 = ctx.createRadialGradient(cx + r*0.5, cy - r*0.3, 0, cx + r*0.5, cy - r*0.3, r*0.3);
+  hl2.addColorStop(0, 'rgba(255, 255, 255, 0.3)');
+  hl2.addColorStop(1, 'rgba(255, 255, 255,0)');
+  ctx.fillStyle = hl2;
+  ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.fill();
+
+  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.6)';
+  ctx.beginPath(); ctx.arc(cx, cy, r - 1, 0, Math.PI * 2); ctx.stroke();
+
+  return new THREE.CanvasTexture(canvas);
+}
+
+const bubbleTexture = create3DCrystalBubble();
+const bubbleMaterial = new THREE.SpriteMaterial({
+  map: bubbleTexture, 
+  transparent: true, 
+  depthWrite: false, 
+  blending: THREE.NormalBlending
+});
+
+// ==========================================
+// 4. 泡泡生成
+// ==========================================
+const bubbles = [];
+const BUBBLE_COUNT = 15; // 稍微增加数量，自动爆破时画面更满
+
+class Bubble {
+  constructor() {
+    const scale = Math.random() * 19 + 26; 
+    this.mesh = new THREE.Sprite(bubbleMaterial.clone());
+    this.mesh.scale.set(scale, scale, 1);
+    this.scaleBase = scale;
+    
+    this.radius = scale * 0.45 * 2.2;
+    
+    this.mesh.position.set(
+      (Math.random() - 0.5) * visibleWidth * 0.8,
+      (Math.random() - 0.5) * visibleHeight * 0.8,
+      (Math.random() - 0.5) * 50
+    );
+
+    this.speedX = (Math.random() - 0.5) * 0.3;
+    this.speedY = (Math.random() - 0.5) * 0.3;
+    this.isDead = false;
+    this.phase = Math.random() * Math.PI * 2;
+    this.mesh.material.opacity = 0;
+    
+    this.type = Math.random() > 0.5 ? 'explode' : 'liquid';
+    this.hue = Math.random();
+    this.mesh.material.color.setHSL(this.hue, 0.9, 0.75); 
+    this.mesh.material.rotation = Math.random() * Math.PI * 2;
+  }
+
+  update(time) {
+    if (this.isDead) return;
+
+    if (this.mesh.material.opacity < 0.85) {
+      this.mesh.material.opacity += 0.02;
+    }
+
+    this.mesh.position.x += this.speedX;
+    this.mesh.position.y += this.speedY;
+
+    const boundX = visibleWidth * 0.45;
+    const boundY = visibleHeight * 0.45;
+    
+    if (this.mesh.position.x > boundX || this.mesh.position.x < -boundX) this.speedX *= -1;
+    if (this.mesh.position.y > boundY || this.mesh.position.y < -boundY) this.speedY *= -1;
+
+    const s = this.scaleBase * (1 + Math.sin(time * 2 + this.phase) * 0.05);
+    this.mesh.scale.set(s, s, 1);
+    this.radius = s * 0.45 * 2.2;
+  }
+}
+
+for (let i = 0; i < BUBBLE_COUNT; i++) {
+  const b = new Bubble();
+  bubbles.push(b);
+  scene.add(b.mesh);
+}
+
+// ==========================================
+// 5. 极高浓度粒子系统
+// ==========================================
+const PARTICLE_POOL_SIZE = 60000;
+const particles = [];
+const geometry = new THREE.BufferGeometry();
+const positions = new Float32Array(PARTICLE_POOL_SIZE * 3);
+const colors = new Float32Array(PARTICLE_POOL_SIZE * 3);
+const sizes = new Float32Array(PARTICLE_POOL_SIZE);
+const lifetimes = new Float32Array(PARTICLE_POOL_SIZE);
+
+geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+geometry.setAttribute('customColor', new THREE.BufferAttribute(colors, 3));
+geometry.setAttribute('size', new THREE.BufferAttribute(sizes, 1));
+geometry.setAttribute('aLife', new THREE.BufferAttribute(lifetimes, 1));
+
+const vertexShader = `
+  attribute float size;
+  attribute vec3 customColor;
+  attribute float aLife;
+  varying vec3 vColor;
+  varying float vLife;
+  void main() {
+    vColor = customColor;
+    vLife = aLife;
+    vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+    gl_PointSize = size * (300.0 / -mvPosition.z) * aLife;
+    gl_Position = projectionMatrix * mvPosition;
+  }
+`;
+
+const fragmentShader = `
+  varying vec3 vColor;
+  varying float vLife;
+  void main() {
+    if (vLife <= 0.0) discard;
+    float dist = length(gl_PointCoord - vec2(0.5));
+    if (dist > 0.5) discard;
+    float alpha = smoothstep(0.5, 0.0, dist) * vLife;
+    vec3 finalColor = vColor * (1.0 + pow(alpha, 3.0) * 1.5);
+    gl_FragColor = vec4(finalColor, alpha);
+  }
+`;
+
+const particleMaterial = new THREE.ShaderMaterial({
+  vertexShader: vertexShader,
+  fragmentShader: fragmentShader,
+  transparent: true,
+  depthWrite: false,
+  blending: THREE.AdditiveBlending
+});
+
+const particleSystem = new THREE.Points(geometry, particleMaterial);
+scene.add(particleSystem);
+
+let ptr = 0;
+for (let i = 0; i < PARTICLE_POOL_SIZE; i++) {
+  particles.push({
+    active: false, x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0,
+    life: 0, maxLife: 1, color: new THREE.Color(), size: 0, type: 'explode'
+  });
+}
+
+function spawnParticles(pos, baseHue, type) {
+  let count = type === 'explode' ? 1500 : 1800;
+  
+  for (let i = 0; i < count; i++) {
+    let p = null;
+    let attempts = 0;
+    while (attempts < PARTICLE_POOL_SIZE) {
+      p = particles[ptr];
+      ptr = (ptr + 1) % PARTICLE_POOL_SIZE;
+      if (!p.active) break;
+      attempts++;
+    }
+    if (attempts >= PARTICLE_POOL_SIZE) break;
+
+    p.active = true;
+    p.x = pos.x + (Math.random() - 0.5) * 20;
+    p.y = pos.y + (Math.random() - 0.5) * 20;
+    p.z = pos.z;
+    p.type = type;
+
+    if (type === 'explode') {
+      const theta = Math.random() * Math.PI * 2;
+      const phi = Math.acos((Math.random() * 2) - 1);
+      const speed = Math.random() * 6 + 2; 
+
+      p.vx = Math.sin(phi) * Math.cos(theta) * speed;
+      p.vy = Math.sin(phi) * Math.sin(theta) * speed;
+      p.vz = Math.cos(phi) * speed;
+
+      p.life = 1.0;
+      p.maxLife = 1.5 + Math.random() * 1.0;
+      p.color.setHSL((baseHue + Math.random() * 0.3) % 1, 1.0, 0.7);
+      p.size = Math.random() * 4.5 + 2.5;
+    } else {
+      const theta = Math.random() * Math.PI * 2;
+      const speed = Math.random() * 3 + 1;
+
+      p.vx = Math.cos(theta) * speed * 0.5;
+      p.vy = Math.sin(theta) * speed * 0.5 - (Math.random() * 2 + 1); 
+      p.vz = (Math.random() - 0.5) * 1;
+
+      p.life = 1.0;
+      p.maxLife = 2.0 + Math.random() * 1.5;
+      p.color.setHSL((baseHue + Math.random() * 0.4) % 1, 1.0, 0.65);
+      p.size = Math.random() * 5 + 3; 
+    }
+  }
+}
+
+// ==========================================
+// 6. 引爆逻辑提取
+// ==========================================
+function popBubble(b, volume = 1.0) {
+  if (b.isDead) return;
+  
+  playSound(b.type, volume);
+  spawnParticles(b.mesh.position, b.hue, b.type);
+  
+  b.isDead = true;
+  b.mesh.material.opacity = 0;
+  
+  setTimeout(() => {
+    b.isDead = false;
+    b.mesh.position.set(
+      (Math.random() - 0.5) * visibleWidth * 0.8,
+      (Math.random() - 0.5) * visibleHeight * 0.8,
+      (Math.random() - 0.5) * 50
+    );
+    b.speedX = (Math.random() - 0.5) * 0.3;
+    b.speedY = (Math.random() - 0.5) * 0.3;
+    b.type = Math.random() > 0.5 ? 'explode' : 'liquid';
+    b.hue = Math.random();
+    b.mesh.material.color.setHSL(b.hue, 0.9, 0.75); 
+    b.mesh.material.rotation = Math.random() * Math.PI * 2;
+  }, 400);
+}
+
+// ==========================================
+// 7. 自动解压逻辑
+// ==========================================
+let autoMode = false;
+let autoInterval = 800; // 毫秒
+let autoTimer = 0;
+
+const btnAuto = document.getElementById('btnAuto');
+const speedSlider = document.getElementById('speedSlider');
+
+btnAuto.addEventListener('click', () => {
+  autoMode = !autoMode;
+  if (autoMode) {
+    btnAuto.textContent = '停止自动解压';
+    btnAuto.classList.add('active');
+    autoTimer = autoInterval; // 立即触发一次
+  } else {
+    btnAuto.textContent = '开启自动解压';
+    btnAuto.classList.remove('active');
+  }
+});
+
+speedSlider.addEventListener('input', (e) => {
+  autoInterval = parseInt(e.target.value);
+});
+
+// ==========================================
+// 8. 交互逻辑 (手动点击 + 自动触发)
+// ==========================================
+const mouseVec = new THREE.Vector2(-10, -10);
+const v3 = new THREE.Vector3(); 
+let isPointerDown = false;
+
+function checkHit() {
+  if (mouseVec.x === -10) return;
+
+  for (let b of bubbles) {
+    if (b.isDead) continue;
+
+    v3.copy(b.mesh.position);
+    v3.project(camera);
+
+    const screenX = (v3.x * 0.5 + 0.5) * window.innerWidth;
+    const screenY = (-v3.y * 0.5 + 0.5) * window.innerHeight;
+
+    const dx = mouseVec.x - screenX;
+    const dy = mouseVec.y - screenY;
+    const dist = Math.sqrt(dx*dx + dy*dy);
+
+    if (dist < b.radius) {
+      popBubble(b, 1.0);
+      break; 
+    }
+  }
+}
+
+window.addEventListener('pointerdown', (e) => {
+  isPointerDown = true;
+  mouseVec.x = e.clientX;
+  mouseVec.y = e.clientY;
+  checkHit();
+});
+
+window.addEventListener('pointermove', (e) => {
+  mouseVec.x = e.clientX;
+  mouseVec.y = e.clientY;
+  if (isPointerDown) checkHit(); 
+});
+
+window.addEventListener('pointerup', () => isPointerDown = false);
+
+// ==========================================
+// 9. 主循环
+// ==========================================
+const clock = new THREE.Clock();
+
+function animate() {
+  requestAnimationFrame(animate);
+  const dt = Math.min(clock.getDelta(), 0.1);
+  const time = clock.getElapsedTime();
+
+  for (let b of bubbles) b.update(time);
+
+  // 自动爆破计时器
+  if (autoMode) {
+    autoTimer += dt * 1000;
+    if (autoTimer >= autoInterval) {
+      autoTimer = 0;
+      
+      // 随机挑选一个未爆的泡泡
+      const aliveBubbles = bubbles.filter(b => !b.isDead);
+      if (aliveBubbles.length > 0) {
+        const randomBubble = aliveBubbles[Math.floor(Math.random() * aliveBubbles.length)];
+        // 自动爆破时音效稍微小一点，防止噪音
+        popBubble(randomBubble, 0.4); 
+      }
+    }
+  }
+
+  const posAttr = geometry.attributes.position;
+  const colorAttr = geometry.attributes.customColor;
+  const sizeAttr = geometry.attributes.size;
+  const lifeAttr = geometry.attributes.aLife;
+
+  for (let i = 0; i < PARTICLE_POOL_SIZE; i++) {
+    const p = particles[i];
+    if (!p.active) {
+      if (lifeAttr.getX(i) !== 0) lifeAttr.setX(i, 0);
+      continue;
+    }
+
+    p.life -= dt / p.maxLife;
+    if (p.life <= 0) {
+      p.active = false;
+      lifeAttr.setX(i, 0);
+      continue;
+    }
+
+    if (p.type === 'explode') {
+      p.vx *= 0.90;
+      p.vy *= 0.90;
+      p.vz *= 0.90;
+      p.vy += dt * 0.5;
+      p.vx += (Math.random() - 0.5) * 0.2;
+      p.vy += (Math.random() - 0.5) * 0.2;
+    } else {
+      p.vx *= 0.96;
+      p.vy *= 0.96;
+      p.vz *= 0.96;
+      p.vy -= dt * 8.0; 
+      p.vx += Math.sin(time * 5 + p.x) * 0.05;
+    }
+
+    p.x += p.vx * dt * 60;
+    p.y += p.vy * dt * 60;
+    p.z += p.vz * dt * 60;
+
+    posAttr.setXYZ(i, p.x, p.y, p.z);
+    
+    const c = p.color.clone().multiplyScalar(Math.min(1, p.life * 2));
+    colorAttr.setXYZ(i, c.r, c.g, c.b);
+    
+    if (p.type === 'liquid') {
+      sizeAttr.setX(i, p.size * (1 + (1 - p.life) * 1.0));
+    } else {
+      sizeAttr.setX(i, p.size);
+    }
+    
+    lifeAttr.setX(i, p.life);
+  }
+
+  posAttr.needsUpdate = true;
+  colorAttr.needsUpdate = true;
+  sizeAttr.needsUpdate = true;
+  lifeAttr.needsUpdate = true;
+
+  composer.render();
+}
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  composer.setSize(window.innerWidth, window.innerHeight);
+  
+  visibleHeight = 2 * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) * camera.position.z;
+  visibleWidth = visibleHeight * camera.aspect;
+});
+
+animate();
+</script>
+</body>
+</html>
